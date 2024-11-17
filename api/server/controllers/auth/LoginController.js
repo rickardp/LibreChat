@@ -1,7 +1,12 @@
 const { setAuthTokens } = require('~/server/services/AuthService');
+const { isProxyAuthEnabled } = require('~/server/services/proxyAuth');
 const { logger } = require('~/config');
 
 const loginController = async (req, res) => {
+  if (isProxyAuthEnabled()) {
+    console.log(JSON.stringify(req.headers));
+    return res.status(400).json({ message: 'Cannot log in to this environment' });
+  }
   try {
     if (!req.user) {
       return res.status(400).json({ message: 'Invalid credentials' });

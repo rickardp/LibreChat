@@ -1,3 +1,4 @@
+const User = require('~/models/User');
 const cookies = require('cookie');
 const jwt = require('jsonwebtoken');
 const {
@@ -6,11 +7,21 @@ const {
   setAuthTokens,
   requestPasswordReset,
 } = require('~/server/services/AuthService');
+const {
+  isProxyAuthEnabled,
+  hasValidUser,
+  getUserName,
+  getUserEmail,
+  getUserDisplayName,
+} = require('~/server/services/proxyAuth');
 const { hashToken } = require('~/server/utils/crypto');
 const { Session, getUserById } = require('~/models');
 const { logger } = require('~/config');
 
 const registrationController = async (req, res) => {
+  if (isProxyAuthEnabled()) {
+    return res.status(403).json({ message: 'Registration is disabled for this environment' });
+  }
   try {
     const response = await registerUser(req.body);
     const { status, message } = response;
@@ -22,6 +33,9 @@ const registrationController = async (req, res) => {
 };
 
 const resetPasswordRequestController = async (req, res) => {
+  if (isProxyAuthEnabled()) {
+    return res.status(403).json({ message: 'Password reset is disabled for this environment' });
+  }
   try {
     const resetService = await requestPasswordReset(req);
     if (resetService instanceof Error) {
@@ -36,6 +50,9 @@ const resetPasswordRequestController = async (req, res) => {
 };
 
 const resetPasswordController = async (req, res) => {
+  if (isProxyAuthEnabled()) {
+    return res.status(403).json({ message: 'Password reset is disabled for this environment' });
+  }
   try {
     const resetPasswordService = await resetPassword(
       req.body.userId,
@@ -54,6 +71,9 @@ const resetPasswordController = async (req, res) => {
 };
 
 const refreshController = async (req, res) => {
+  if (isProxyAuthEnabled()) {
+    return await handleProxyAuth(req, res);
+  }
   const refreshToken = req.headers.cookie ? cookies.parse(req.headers.cookie).refreshToken : null;
   if (!refreshToken) {
     return res.status(200).send('Refresh token not provided');
@@ -93,6 +113,35 @@ const refreshController = async (req, res) => {
     logger.error(`[refreshController] Refresh token: ${refreshToken}`, err);
     res.status(403).send('Invalid refresh token');
   }
+};
+
+const handleProxyAuth = async (req, res) => {
+  const userName = getUserName();
+  if (!userName) {
+    return res.status(401).send('User not provided');
+  }
+  if (!hasValidUser(req)) {
+    return res.status(403).send('User ' + userName + ' is not authorized to use this service');
+  }
+  // If user doesn't exist, register them
+  let user = await User.findOne({ username: userName }, '_id').lean();
+  if (!user) {
+    //determine if this is the first registered user (not counting anonymous_user)
+    const isFirstRegisteredUser = (await User.countDocuments({})) === 0;
+    const newUser = await new User({
+      provider: 'local',
+      email: getUserEmail(req),
+      name: getUserDisplayName(req),
+      username: userName,
+      avatar: null,
+      role: isFirstRegisteredUser ? 'ADMIN' : 'USER',
+    });
+    newUser.password = '';
+    await newUser.save();
+    user = await User.findOne({ username: userName }, '_id').lean();
+  }
+  const token = await setAuthTokens(user._id, res);
+  return res.status(200).send({ token, user });
 };
 
 module.exports = {
